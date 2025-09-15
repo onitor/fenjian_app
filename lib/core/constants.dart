@@ -7,3 +7,9 @@ class K {
   static const midText = TextStyle(fontSize: 18, fontWeight: FontWeight.w600);
   static const lightText = TextStyle(fontSize: 16);
 }
+// lib/config/constants.dart
+const String kUserRoleSorter = '5';
+
+// 仅供“发送用”的占位主题（和后端对齐后替换）：
+String topicSorterOnline(String eq) => 'recycle/$eq/sorter/online';  // 可选心跳/上线
+

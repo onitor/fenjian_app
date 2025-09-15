@@ -7,7 +7,9 @@ plugins {
 
 android {
     namespace = "com.example.fenjian_app"
-    compileSdk = flutter.compileSdkVersion
+
+    // 关键：直接写死为 35（不要再用 flutter.compileSdkVersion）
+    compileSdk = 35
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
@@ -20,21 +22,23 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.example.fenjian_app"
-        // You can update the following values to match your application needs.
-        // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
-        targetSdk = flutter.targetSdkVersion
+        // 关键：target 也升到 35（不要再用 flutter.targetSdkVersion）
+        targetSdk = 35
+
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+
+        // 可选：大项目建议开 multidex
+        multiDexEnabled true
     }
 
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
             signingConfig = signingConfigs.debug
+            minifyEnabled false
+            shrinkResources false
         }
     }
 }

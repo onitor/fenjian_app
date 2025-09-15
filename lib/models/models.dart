@@ -48,3 +48,20 @@ class PickingBrief {
   final String state;
   const PickingBrief({required this.id, required this.number, required this.state});
 }
+/// 分拣单状态（你后端定义）
+enum PickState {
+  draft,      // 草稿
+  pick,       // 分拣中
+  weighing,   // 称重
+  audit,      // 审核中
+  finish,     // 完成
+  cancel,     // 取消
+  all,        // 特殊：全部（请求时不传 pickState）
+}
+
+String? pickStateParam(PickState s) {
+  switch (s) {
+    case PickState.all: return null;
+    default: return s.name; // 与后端保持完全一致的字符串
+  }
+}
