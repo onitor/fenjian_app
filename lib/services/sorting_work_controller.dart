@@ -3,6 +3,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:dio/dio.dart' as dio;
+import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:get_storage/get_storage.dart';
 
@@ -240,39 +241,94 @@ class SortingWorkController extends GetxController {
 
   // ============== 异常提报 ==============
   /// remark: 异常原因；files：文件ID列表 或 上传返回的 key（按你们后端约定）
-  Future<void> submitAbnormal({
+  // SortingWorkController 内
+
+  Future<bool> submitAbnormal({
     required String remark,
     List<String>? files,
   }) async {
-    if (remark.trim().isEmpty) {
-      Get.snackbar('提示', '请填写异常说明');
-      return;
-    }
+    if (remark.trim().isEmpty) return false;
 
     isPageBusy.value = true;
     try {
-      final dataMap = {
-        'orderId': orderId,
-        'remark': remark,
-        if (files != null) 'files': files,
-      };
+      final path = '/tx_purchase_order/tx_update_abnormal_order';
 
+      // 1) 与 Apifox 对齐：multipart/form-data + 始终带 files
+      final map = <String, dynamic>{
+        'orderId': orderId.toString(),
+        'remark': remark,
+        'files': (files != null && files.isNotEmpty) ? files.join(',') : '',
+      };
+      final formData = dio.FormData.fromMap(map);
+
+      // —— 打印请求 ——
+      final url = _dio.options.baseUrl.isEmpty
+          ? path
+          : (_dio.options.baseUrl.endsWith('/') || path.startsWith('/')
+          ? '${_dio.options.baseUrl}$path'
+          : '${_dio.options.baseUrl}$path');
+      debugPrint('[ABN][REQ] POST $url');
+      debugPrint('[ABN][REQ] contentType: multipart/form-data');
+      debugPrint('[ABN][REQ] form: $map');
+
+      // 2) 不要强制 contentType，Dio 会根据 FormData 自动设置 multipart/form-data
       final resp = await _dio.post(
-        '/tx_purchase_order/tx_update_abnormal_order',
-        data: dataMap,
+        path,
+        data: formData,
       );
+
+      // —— 打印响应 ——
+      final sc = resp.statusCode ?? 0;
+      final raw = resp.data;
+      debugPrint('[ABN][RESP] status=$sc');
+      debugPrint('[ABN][RESP] raw=${raw is String ? raw : (raw?.toString() ?? 'null')}');
+
+      // 3) 严判：返回里有 code 时，只认 0/200 成功
       final data = _normalizeRespData(resp);
-      _ensureOk(data);
+      final ok = _isOkLoose(data, httpStatus: sc);
+      if (!ok) {
+        final msg = _extractMsg(data) ?? '后端未返回可识别的成功标记';
+        throw Exception(msg);
+      }
 
       abnormal.value = true;
-      Get.snackbar('成功', '已提交异常订单');
-      // 异常后可选择刷新详情
       await _refreshOrderSummary();
+      return true;
     } catch (e) {
-      Get.snackbar('错误', e.toString());
+      debugPrint('[ABN][ERR] $e');
+      // 只弹真实错误信息
+      Get.snackbar('错误', e.toString().replaceFirst('Exception: ', ''));
+      return false;
     } finally {
       isPageBusy.value = false;
     }
+  }
+
+// ========= 改造后的 _isOkLoose =========
+  bool _isOkLoose(dynamic data, {required int httpStatus}) {
+    if (data is Map) {
+      final hasCode = data.containsKey('code');
+      final codeStr = data['code']?.toString();
+      final success = data['success'] == true;
+      final status = (data['status'] ?? '').toString().toUpperCase();
+
+      if (success || status == 'OK' || status == 'SUCCESS') return true;
+      if (hasCode) return codeStr == '0' || codeStr == '200';
+      return httpStatus >= 200 && httpStatus < 300;
+    }
+    if (data is List) return true;
+    if (data is bool) return data;
+    if (data is String) {
+      final s = data.trim().toLowerCase();
+      return s == 'ok' || s == 'success' || s == 'true';
+    }
+    return httpStatus >= 200 && httpStatus < 300;
+  }
+
+  String? _extractMsg(dynamic data) {
+    if (data is Map) return (data['msg'] ?? data['message'] ?? data['error'])?.toString();
+    if (data is String && data.isNotEmpty) return data;
+    return null;
   }
 
   // ============== 一键完成（闭环） ==============
