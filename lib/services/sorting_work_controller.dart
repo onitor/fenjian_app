@@ -31,13 +31,15 @@ class SortingWorkController extends GetxController {
 
   final _dio = HttpService().dio;
   final _box = GetStorage();
+  final tmsLines = <TmsOrderLineVM>[].obs; // 当前分拣订单的累计行
+  double get tmsTotalWeight => tmsLines.fold(0.0, (s, e) => s + (e.weight));
 
   late int orderId;     // 采购单 ID
   late String orderNumber;
   late int equipmentId; // 设备 ID（称/柜）
   late String equipmentName;
   late String shipmentId; // tmsOrderId，用于 finish
-
+  late String containerCode;
   // ============== 生命周期/加载 ==============
   Future<void> load(String orderIdFromRoute) async {
     isPageBusy.value = true;
@@ -45,6 +47,7 @@ class SortingWorkController extends GetxController {
       // 取路由参数
       final args = Get.arguments ?? {};
       shipmentId = (args['shipmentId'] ?? '').toString();
+      containerCode = (args['containerCode'] ?? '').toString();
 
       if (orderIdFromRoute.trim().isEmpty) {
         Get.snackbar('提示', '订单ID为空');
@@ -59,6 +62,9 @@ class SortingWorkController extends GetxController {
       }
 
       await _fetchOrderDetailAndBuildState(orderId);
+      if (containerCode.isNotEmpty) {
+        await fetchTmsLinesByContainerCode(containerCode);
+      }
     } catch (e) {
       Get.snackbar('错误', e.toString());
       // 出错也尽量不崩页
@@ -177,8 +183,49 @@ class SortingWorkController extends GetxController {
     selected1.value = null;
     selected2.value = null;
   }
+  Future<void> fetchTmsLinesByContainerCode(String code) async {
+    try {
+      final resp = await _dio.get(
+        '/tx_tms_mgmt/get_tms_order_container_code',
+        queryParameters: {'containerCode': code, 'limit': 1},
+      );
+      final data = _normalizeRespData(resp);
+      _ensureOk(data);
+
+      final List list = (data is Map) ? (data['data'] as List? ?? const []) : [];
+      if (list.isEmpty) {
+        tmsLines
+          ..clear()
+          ..refresh();
+        return;
+      }
+      final m = list.first as Map<String, dynamic>;
+      final lineList = (m['tmsOrderLine'] as List? ?? const []);
+
+      final parsed = <TmsOrderLineVM>[];
+      for (final it in lineList) {
+        final mm = it as Map<String, dynamic>;
+        parsed.add(TmsOrderLineVM(
+          tmsOrderLineId: (mm['tmsOrderLineId'] ?? 0) as int,
+          productId: (mm['productId'] ?? 0) as int,
+          productName: (mm['productName'] ?? '').toString(),
+          weight: (mm['weight'] ?? 0).toDouble(),
+        ));
+      }
+
+      tmsLines
+        ..clear()
+        ..addAll(parsed)
+        ..refresh();
+    } catch (e) {
+      // 不中断主流程，仅提示
+      debugPrint('[TMS][ERR] 拉取 tmsOrderLine 失败: $e');
+    }
+  }
+
 
   // ============== 两台秤：加入（B 接口） ==============
+  // ============== 两台秤：加入（新接口，使用 TMS 分拣订单ID） ==============
   Future<void> addFromScale({
     required int scaleNo, // 1 或 2
     required double weight,
@@ -193,42 +240,83 @@ class SortingWorkController extends GetxController {
       Get.snackbar('提示', '请放置物品并等待稳定重量');
       return;
     }
+    if (shipmentId.isEmpty) {
+      Get.snackbar('错误', '缺少分拣订单ID（tmsOrderId / shipmentId）');
+      return;
+    }
 
     final busy = (scaleNo == 1 ? isBusyScale1 : isBusyScale2);
     if (busy.value) return; // 防抖
     busy.value = true;
 
     try {
+      final orderIdForAdd = int.tryParse(shipmentId) ?? shipmentId;
+
+      // 新接口：/tx_tms_mgmt/add_tms_order_line
+      final path = '/tx_tms_mgmt/add_tms_order_line';
       final payload = {
-        'orderId': orderId,
-        'productId': sel.productId,
-        'sortWeight': weight,
+        'orderId': orderIdForAdd,     // 这里用 shipmentId（分拣订单ID），不是用户采购单ID
+        'productId': sel.productId,   // 分类ID
+        'weight': weight,             // 累加重量（kg）
       };
 
-      final resp = await _dio.post(
-        '/tx_purchase_order/add_tx_pick_order_line',
-        data: payload,
-      );
+      debugPrint('[ADD][REQ] POST $path  $payload');
+      final resp = await _dio.post(path, data: payload);
       final data = _normalizeRespData(resp);
       _ensureOk(data);
+      debugPrint('[ADD][RESP] $data');
 
-      // 成功：本地 totals 先行更新（以后端为准）
+      // 本地 totals 仍按“当前用户订单”视图做先行展示（以后端为准）
       totals[sel.productId] = (totals[sel.productId] ?? 0) + weight;
       totals.refresh();
 
-      Get.snackbar('已加入',
-          '称$scaleNo → ${sel.name} + ${weight.toStringAsFixed(2)} kg');
+      Get.snackbar('已加入', '称$scaleNo → ${sel.name} + ${weight.toStringAsFixed(2)} kg');
 
-      // 可选：重新拉一遍订单聚合（若后端返回有 totals，更建议直接覆盖）
       if (refreshAfterSubmit) {
         await _refreshOrderSummary();
       }
+      if (containerCode.isNotEmpty) {
+        await fetchTmsLinesByContainerCode(containerCode); //  刷新分拣累计
+      }
     } catch (e) {
-      Get.snackbar('错误', e.toString());
+      Get.snackbar('错误', e.toString().replaceFirst('Exception: ', ''));
     } finally {
       busy.value = false;
     }
   }
+  // ============== 修改累加记录（新接口，可供后续“编辑明细”用） ==============
+  Future<bool> updateTmsOrderLine({
+    required int tmsOrderLineId,
+    required int productId,
+    required double weight,
+  }) async {
+    if (weight < 0) {
+      Get.snackbar('提示', '重量不能为负数');
+      return false;
+    }
+    try {
+      final path = '/tx_tms_mgmt/update_tms_order_line';
+      final payload = {
+        'tmsOrderLineId': tmsOrderLineId,
+        'productId': productId,
+        'weight': weight,
+      };
+      debugPrint('[UPD][REQ] POST $path  $payload');
+      final resp = await _dio.post(path, data: payload);
+      final data = _normalizeRespData(resp);
+      _ensureOk(data);
+      debugPrint('[UPD][RESP] $data');
+
+      // 这里不做本地 totals 的盲目调整，因为不知道旧值，建议调用刷新
+      await _refreshOrderSummary();
+      return true;
+    } catch (e) {
+      Get.snackbar('错误', e.toString().replaceFirst('Exception: ', ''));
+      return false;
+    }
+  }
+
+
 
   /// 重新拉取订单详情以刷新 totals / 明细（以后端为准）
   Future<void> _refreshOrderSummary() async {
@@ -333,6 +421,8 @@ class SortingWorkController extends GetxController {
 
   // ============== 一键完成（闭环） ==============
   /// 调用 /tx_tms_mgmt/finish_pick_tms_order ，参数 tmsOrderId（shipmentId）
+  // ============== 一键完成（闭环） ==============
+// 顺序：1) 订单分拣完成 -> 2) 订单称重完成 -> 3) 分拣入库完成-管理员审核
   Future<void> submitAllAndFinish() async {
     if (shipmentId.isEmpty) {
       Get.snackbar('提示', '缺少运输单 ID（tmsOrderId）');
@@ -341,24 +431,55 @@ class SortingWorkController extends GetxController {
 
     isPageBusy.value = true;
     try {
-      final resp = await _dio.post(
-        '/tx_tms_mgmt/finish_pick_tms_order',
-        data: {'tmsOrderId': shipmentId},
+      await _finishStep(
+        title: '订单分拣完成',
+        path: '/tx_tms_mgmt/finish_pick_tms_order',
+        payload: {'tmsOrderId': shipmentId},
       );
-      final data = _normalizeRespData(resp);
-      _ensureOk(data);
 
-      // 记录进度，并返回列表页
+      await _finishStep(
+        title: '订单称重完成',
+        path: '/tx_tms_mgmt/finish_weighing_tms_order',
+        payload: {'tmsOrderId': shipmentId},
+      );
+
+      await _finishStep(
+        title: '分拣入库完成-管理员审核',
+        path: '/tx_tms_mgmt/tx_check_finish_pick_order',
+        payload: {'tmsOrderId': shipmentId},
+      );
+
+      // 全部成功：记录进度并返回列表页
       final key = 'progress_$shipmentId';
       _box.write(key, orderId.toString());
-      Get.snackbar('完成', '已确认完成分拣');
-      Get.back(); // 回到列表
+      Get.snackbar('完成', '已完成分拣/称重/入库审核');
+      Get.back();
     } catch (e) {
-      Get.snackbar('错误', e.toString());
+      // _finishStep 已抛出“带步骤名”的异常，这里透传即可
+      Get.snackbar('错误', e.toString().replaceFirst('Exception: ', ''));
     } finally {
       isPageBusy.value = false;
     }
   }
+
+  Future<void> _finishStep({
+    required String title,
+    required String path,
+    required Map<String, dynamic> payload,
+  }) async {
+    debugPrint('[FINISH][$title][REQ] POST $path  $payload');
+    final resp = await _dio.post(path, data: payload);
+    final data = _normalizeRespData(resp);
+    try {
+      _ensureOk(data);
+    } catch (e) {
+      final msg = (e.toString().replaceFirst('Exception: ', '')).trim();
+      // 抛出带步骤名的错误，外层捕获后直接提示
+      throw Exception('$title 失败：$msg');
+    }
+    debugPrint('[FINISH][$title][RESP] $data');
+  }
+
 
   // ============== 工具方法（响应规范化与校验） ==============
   /// 规范化响应：把 String JSON / 纯 List 包装成 {code:0,data:list}
@@ -445,7 +566,122 @@ class SortingWorkController extends GetxController {
       Get.snackbar('已保存', '当前进度：订单 $valueToSave');
     }
   }
+  /// 一键完成：串行执行 1/2/3，并统计无异常/异常订单数量用于弹窗展示
+  Future<FinishDialogData> finishAndSummarizeForDialog({
+    required String containerCode,
+  }) async {
+    bool s1 = false, s2 = false, s3 = false;
+    String? e1, e2, e3;
 
+    // 1) 订单分拣完成
+    try {
+      final r1 = await _dio.post(
+        '/tx_tms_mgmt/finish_pick_tms_order',
+        data: {'tmsOrderId': shipmentId},
+      );
+      _ensureOk(_normalizeRespData(r1));
+      s1 = true;
+    } catch (e) {
+      e1 = e.toString().replaceFirst('Exception: ', '');
+    }
+
+    // 2) 订单称重完成（仅在 1 成功后继续）
+    if (s1) {
+      try {
+        final r2 = await _dio.post(
+          '/tx_tms_mgmt/finish_weighing_tms_order',
+          data: {'tmsOrderId': shipmentId},
+        );
+        _ensureOk(_normalizeRespData(r2));
+        s2 = true;
+      } catch (e) {
+        e2 = e.toString().replaceFirst('Exception: ', '');
+      }
+    }
+
+    // 3) 分拣入库完成-管理员审核（仅在 1、2 都成功后继续；失败也不阻断分拣员离场）
+    if (s1 && s2) {
+      try {
+        final r3 = await _dio.post(
+          '/tx_tms_mgmt/tx_check_finish_pick_order',
+          data: {'tmsOrderId': shipmentId},
+        );
+        _ensureOk(_normalizeRespData(r3));
+        s3 = true;
+      } catch (e) {
+        e3 = e.toString().replaceFirst('Exception: ', '');
+      }
+    }
+
+    // 4) 拉柜号总结（统计无异常/异常数量）
+    int normal = 0, abnormal = 0;
+    try {
+      final resp = await _dio.get(
+        '/tx_tms_mgmt/get_tms_order_container_code',
+        queryParameters: {'containerCode': containerCode, 'limit': 1},
+      );
+      final data = _normalizeRespData(resp);
+      _ensureOk(data);
+      final list = (data is Map) ? (data['data'] as List? ?? const []) : (data as List? ?? const []);
+      if (list.isNotEmpty) {
+        final m = list.first as Map<String, dynamic>;
+        final pos = (m['purchaseOrders'] as List? ?? const []);
+        for (final it in pos) {
+          final mm = it as Map<String, dynamic>;
+          final st = (mm['orderState'] ?? '').toString().toLowerCase();
+          if (st == 'finish') {
+            normal++;
+          } else {
+            abnormal++;
+          }
+        }
+      }
+    } catch (_) {
+      // 统计失败不影响主流程
+    }
+
+    // 可选：保存一下当前进度
+    final key = 'progress_$shipmentId';
+    _box.write(key, orderId.toString());
+
+    return FinishDialogData(
+      step1Ok: s1,
+      step2Ok: s2,
+      step3Ok: s3,
+      err1: e1,
+      err2: e2,
+      err3: e3,
+      normalCount: normal,
+      abnormalCount: abnormal,
+    );
+  }
+
+}
+
+// 点击一键完成后弹窗要用到的汇总数据
+class FinishDialogData {
+  final bool step1Ok; // 分拣完成
+  final bool step2Ok; // 称重完成
+  final bool step3Ok; // 管理员审核
+  final String? err1;
+  final String? err2;
+  final String? err3;
+  final int normalCount;   // 无异常订单数（orderState == 'finish'）
+  final int abnormalCount; // 异常订单数（其他状态视为异常）
+
+  FinishDialogData({
+    required this.step1Ok,
+    required this.step2Ok,
+    required this.step3Ok,
+    this.err1,
+    this.err2,
+    this.err3,
+    required this.normalCount,
+    required this.abnormalCount,
+  });
+
+  // ✅ 允许回到扫码入口的条件：前两步都成功；第三步失败通常是因为有异常单转后台审核
+  bool get canLeaveToHome => step1Ok && step2Ok;
 }
 
 // ================== 视图模型 ==================
@@ -459,6 +695,18 @@ class OrderVideo {
   final String id;
   final String url;
   OrderVideo({required this.id, required this.url});
+}
+class TmsOrderLineVM {
+  final int tmsOrderLineId;
+  final int productId;
+  final String productName;
+  final double weight;
+  TmsOrderLineVM({
+    required this.tmsOrderLineId,
+    required this.productId,
+    required this.productName,
+    required this.weight,
+  });
 }
 
 class OrderLineVM {

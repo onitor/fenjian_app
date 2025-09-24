@@ -4,16 +4,18 @@ import 'package:dio/dio.dart';
 import '../services/http_service.dart';
 
 class ResolvedShipment {
-  final String shipmentId;     // A接口里的 orderId（运输单ID）
-  final String shipmentName;   // A接口里的 orderName
+  final String shipmentId;     // TMS 订单ID
+  final String shipmentName;   // TMS 订单号
   final String equipmentNumber;
   final String destination;
+  final String containerCode;  // ✅ 新增：柜号（用于 get_tms_order_container_code）
   final List<ResolvedPO> purchaseOrders;
   ResolvedShipment({
     required this.shipmentId,
     required this.shipmentName,
     required this.equipmentNumber,
     required this.destination,
+    required this.containerCode, // ✅ 新增
     required this.purchaseOrders,
   });
 }
@@ -62,6 +64,7 @@ class SortingLocatorApi {
       final shipmentName = (m['orderName'] ?? '').toString();
       final equipmentNum = (m['equipmentNumber'] ?? '').toString();
       final dest         = (m['destination'] ?? '').toString();
+      final contCode     = (m['containerCode'] ?? '').toString();
 
       final poList = <ResolvedPO>[];
       for (final po in (m['purchaseOrders'] as List? ?? [])) {
@@ -87,10 +90,28 @@ class SortingLocatorApi {
         shipmentName: shipmentName,
         equipmentNumber: equipmentNum,
         destination: dest,
+        containerCode: contCode,
         purchaseOrders: poList,
       );
     } catch (_) {
       return null;
     }
   }
+
+  // (2) 绑定分拣员
+  Future<void> bindPicker({
+    required String tmsOrderId,
+    required String tmsOrderCode,
+    required String pickUserId,
+  }) async {
+    await _http.post(
+      '/tx_tms_mgmt/tms_pick_order_bind',
+      data: {
+        'tmsOrderId': tmsOrderId,
+        'tmsOrderCode': tmsOrderCode,
+        'pickUserId': pickUserId,
+      },
+    );
+  }
+
 }

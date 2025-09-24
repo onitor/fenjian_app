@@ -19,6 +19,7 @@ class _SortingWorkPageState extends State<SortingWorkPage> {
   late final SortingWorkController c;
   late final ScaleService scale;
   late StreamSubscription<double> _sub1, _sub2;
+  late String _containerCode;
   // 秤关联控件
   final _w1 = TextEditingController();
   final _w2 = TextEditingController();
@@ -42,6 +43,8 @@ class _SortingWorkPageState extends State<SortingWorkPage> {
       Get.back();
       return;
     }
+    final args = Get.arguments as Map? ?? {};
+    _containerCode = (args['containerCode'] ?? '').toString();
     c.load(orderIdStr);
 
     scale = createScaleService();
@@ -62,7 +65,7 @@ class _SortingWorkPageState extends State<SortingWorkPage> {
       factor2: 11.80,
     );
 
-    // ✅ 保留一次订阅就好
+    //  保留一次订阅就好
     _sub1 = scale.watchCurrentWeight(1).listen((w) {
       _live1 = w;
       _w1.text = w.toStringAsFixed(2);
@@ -76,7 +79,6 @@ class _SortingWorkPageState extends State<SortingWorkPage> {
       setState(() {});
     });
   }
-
 
   String _extractOrderIdString() {
     final args = Get.arguments;
@@ -101,8 +103,8 @@ class _SortingWorkPageState extends State<SortingWorkPage> {
 
   @override
   void dispose() {
-    try { _sub1?.cancel(); } catch (_) {}
-    try { _sub2?.cancel(); } catch (_) {}
+    try { _sub1.cancel(); } catch (_) {}
+    try { _sub2.cancel(); } catch (_) {}
     // 不 stop，让端口常驻，下一页只需重新 listen 即可
     _w1.dispose();
     _w2.dispose();
@@ -110,7 +112,6 @@ class _SortingWorkPageState extends State<SortingWorkPage> {
     _abFiles.dispose();
     super.dispose();
   }
-
 
   @override
   Widget build(BuildContext context) {
@@ -203,10 +204,11 @@ class _SortingWorkPageState extends State<SortingWorkPage> {
                 // 一键完成
                 ElevatedButton.icon(
                   style: bigPrimaryBtn,
-                  onPressed: c.isPageBusy.value ? null : c.submitAllAndFinish,
+                  onPressed: c.isPageBusy.value ? null : _onFinishTap,
                   icon: const Icon(Icons.check_circle),
                   label: const Text('一键确认完成所有正常订单'),
                 ),
+
                 const SizedBox(height: 8),
                 const Text('完成后可回到入口页继续扫码其它柜号开始新流程。', style: TextStyle(color: Colors.black54, fontSize: 16)),
                 const SizedBox(height: 24),
@@ -273,13 +275,13 @@ class _SortingWorkPageState extends State<SortingWorkPage> {
             const SizedBox(height: 10),
             if (url.isEmpty)
               const AspectRatio(
-                aspectRatio: 16 / 9,
+                aspectRatio: 16 / 9, // 固定 16:9，加载与否高度一致
                 child: Center(child: Text('暂无视频', style: TextStyle(fontSize: 18))),
               )
             else
               ClipRRect(
                 borderRadius: BorderRadius.circular(12),
-                child: InlineVideo(url: url),
+                child: InlineVideo(url: url), // 内部已固定 16:9
               ),
           ],
         ),
@@ -303,7 +305,6 @@ class _SortingWorkPageState extends State<SortingWorkPage> {
           weightCtrl: _w1,
           live: _live1,
           onTare: () async => await scale.tare(id: 1),
-          onClearField: () => _w1.clear(),
           onAdd: () => _onAdd(1, _w1.text),
           btnStyle: bigPrimaryBtn,
         ));
@@ -317,7 +318,6 @@ class _SortingWorkPageState extends State<SortingWorkPage> {
           weightCtrl: _w2,
           live: _live2,
           onTare: () async => await scale.tare(id: 2),
-          onClearField: () => _w2.clear(),
           onAdd: () => _onAdd(2, _w2.text),
           btnStyle: bigPrimaryBtn,
         ));
@@ -338,10 +338,19 @@ class _SortingWorkPageState extends State<SortingWorkPage> {
     required TextEditingController weightCtrl,
     required double? live,
     required Future<void> Function() onTare,
-    required VoidCallback onClearField,
     required VoidCallback onAdd,
     required ButtonStyle btnStyle,
   }) {
+    const Color primaryMint = Color(0xFF26A69A);
+    final tareBtnStyle = ElevatedButton.styleFrom(
+      backgroundColor: primaryMint,
+      foregroundColor: Colors.white,
+      minimumSize: const Size(86, 48), // 更大的点击面积
+      textStyle: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      elevation: 0.8,
+    );
+
     return Card(
       elevation: 0.5,
       color: Colors.white,
@@ -407,25 +416,12 @@ class _SortingWorkPageState extends State<SortingWorkPage> {
                     ),
                   ),
                 ),
-                const SizedBox(width: 8),
-                Column(
-                  children: [
-                    SizedBox(
-                      height: 40,
-                      child: OutlinedButton(
-                        onPressed: onTare,
-                        child: const Text('去皮', style: TextStyle(fontSize: 16)),
-                      ),
-                    ),
-                    const SizedBox(height: 6),
-                    SizedBox(
-                      height: 40,
-                      child: OutlinedButton(
-                        onPressed: onClearField,
-                        child: const Text('清空', style: TextStyle(fontSize: 16)),
-                      ),
-                    ),
-                  ],
+                const SizedBox(width: 10),
+                //  只保留“去皮”，更明显
+                ElevatedButton(
+                  style: tareBtnStyle,
+                  onPressed: onTare,
+                  child: const Text('去皮'),
                 ),
               ],
             ),
@@ -447,13 +443,13 @@ class _SortingWorkPageState extends State<SortingWorkPage> {
     );
   }
 
-  void _onAdd(int scaleNo, String weightStr) {
+  void _onAdd(int scaleNo, String weightStr) async {
     final w = double.tryParse(weightStr.trim());
     if (w == null || w <= 0) {
       Get.snackbar('提示', '请输入有效的稳定重量');
       return;
     }
-    c.addFromScale(scaleNo: scaleNo, weight: _round2(w));
+    await c.addFromScale(scaleNo: scaleNo, weight: _round2(w));
   }
 
   double _round2(double v) => (v * 100).roundToDouble() / 100.0;
@@ -462,23 +458,20 @@ class _SortingWorkPageState extends State<SortingWorkPage> {
   Widget _recordsCard(ShapeBorder shapeWithBorder) {
     final lines = c.detail.value?.lines ?? [];
     final table = DataTable(
+      //  去掉“已分拣重”和“小计”
       columns: const [
         DataColumn(label: Text('产品')),
         DataColumn(label: Text('初始重')),
-        DataColumn(label: Text('已分拣重')),
         DataColumn(label: Text('单位')),
         DataColumn(label: Text('单价')),
-        DataColumn(label: Text('小计')),
       ],
       rows: [
         for (final l in lines)
           DataRow(cells: [
             DataCell(Text('${l.productName} (#${l.productId})')),
             DataCell(Text('${_round2(l.initWeight)} kg')),
-            DataCell(Text('${_round2(l.sortWeight)} kg')),
             DataCell(Text(l.uomName)),
             DataCell(Text('${_round2(l.recUnitPrice)}')),
-            DataCell(Text('${_round2(l.recTotalPrice)}')),
           ]),
       ],
     );
@@ -519,29 +512,26 @@ class _SortingWorkPageState extends State<SortingWorkPage> {
     );
   }
 
-  // 汇总卡片
+  // 汇总卡片（分拣累计）
   Widget _summaryCard(ShapeBorder shapeWithBorder) {
-    final cats = c.categories;
-    final totals = c.totals;
-    final lines = c.detail.value?.lines ?? [];
-
-    double sumAll = 0;
-    for (final v in totals.values) sumAll += v;
+    final lines = c.tmsLines; //  来自分拣订单的累计行
+    final sumAll = lines.fold<double>(0.0, (s, e) => s + e.weight);
 
     final table = DataTable(
+      columnSpacing: 56, //  列间距更大
       columns: const [
+        DataColumn(label: Text('行ID')),
         DataColumn(label: Text('产品')),
-        DataColumn(label: Text('累计分拣重')),
-        DataColumn(label: Text('初始重')),
-        DataColumn(label: Text('剩余可分配')),
+        DataColumn(label: Text('累计分拣重(kg)')),
+        DataColumn(label: Text('产品ID')),
       ],
       rows: [
-        for (final cat in cats)
+        for (final l in lines)
           DataRow(cells: [
-            DataCell(Text('${cat.name} (#${cat.productId})')),
-            DataCell(Text('${_round2(totals[cat.productId] ?? 0)} kg')),
-            DataCell(Text('${_round2(_initOf(lines, cat.productId))} kg')),
-            DataCell(Text('${_round2(max(0, _initOf(lines, cat.productId) - (totals[cat.productId] ?? 0)))} kg')),
+            DataCell(Text('${l.tmsOrderLineId}')),
+            DataCell(Text(l.productName)),
+            DataCell(Text(_round2(l.weight).toString())),
+            DataCell(Text('${l.productId}')),
           ]),
       ],
     );
@@ -551,20 +541,20 @@ class _SortingWorkPageState extends State<SortingWorkPage> {
       color: Colors.white,
       shape: shapeWithBorder,
       child: Padding(
-        padding: const EdgeInsets.all(14),
+        padding: const EdgeInsets.all(16), //  padding 略大
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text('分类累计', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800)),
-            const SizedBox(height: 10),
+            const Text('分拣累计', style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800)), //  字号更大
+            const SizedBox(height: 12),
             Theme(
               data: Theme.of(context).copyWith(
                 dataTableTheme: const DataTableThemeData(
-                  headingTextStyle: TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
-                  dataTextStyle: TextStyle(fontSize: 18),
-                  headingRowHeight: 56,
-                  dataRowMinHeight: 56,
-                  dataRowMaxHeight: 64,
+                  headingTextStyle: TextStyle(fontSize: 20, fontWeight: FontWeight.w800), //  大一号
+                  dataTextStyle: TextStyle(fontSize: 20), //  大一号
+                  headingRowHeight: 60,
+                  dataRowMinHeight: 60,
+                  dataRowMaxHeight: 72,
                   dividerThickness: 0.6,
                 ),
               ),
@@ -573,12 +563,12 @@ class _SortingWorkPageState extends State<SortingWorkPage> {
                 child: table,
               ),
             ),
-            const SizedBox(height: 10),
+            const SizedBox(height: 12),
             Align(
               alignment: Alignment.centerRight,
               child: Text(
-                '当前订单总分拣重：${_round2(sumAll)} kg',
-                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+                '分拣订单累计总重：${_round2(sumAll)} kg',
+                style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800), //  大一号
               ),
             ),
           ],
@@ -587,38 +577,71 @@ class _SortingWorkPageState extends State<SortingWorkPage> {
     );
   }
 
-  double _initOf(List<OrderLineVM> lines, int pid) {
-    final line = lines.where((e) => e.productId == pid);
-    double s = 0;
-    for (final l in line) s += l.initWeight;
-    return s;
-  }
-
   // 异常单弹窗
   void _openAbnormalDialog() {
     _abRemark.text = '';
     _abFiles.text = '';
+
+    // ✅ 快捷短语（可按需增删）
+    const suggestions = <String>[
+      '该订单分类与视频不符合',
+      '该订单分类有异物，重量不符',
+      '视频不清晰，无法核验',
+      '缺少关键画面，需复核',
+      '称重异常，需复称',
+    ];
+
     Get.dialog(
       AlertDialog(
         title: const Text('生成异常订单'),
         content: SizedBox(
-          width: 420,
+          width: 460,
           child: Column(
             mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              // ✅ 快捷选择区
+              const Text('快捷说明（点一下即可填入）',
+                  style: TextStyle(fontSize: 14, color: Colors.black54)),
+              const SizedBox(height: 6),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  for (final s in suggestions)
+                    ActionChip(
+                      label: Text(s, style: const TextStyle(fontSize: 13)),
+                      onPressed: () {
+                        final cur = _abRemark.text.trim();
+                        final next = cur.isEmpty ? s : '$cur；$s';
+                        _abRemark.text = next;
+                        _abRemark.selection = TextSelection.collapsed(
+                          offset: _abRemark.text.length,
+                        );
+                      },
+                    ),
+                ],
+              ),
+              const SizedBox(height: 12),
+
+              // 备注输入
               TextField(
                 controller: _abRemark,
                 maxLines: 3,
                 decoration: const InputDecoration(
                   labelText: '异常说明（必填）',
                   alignLabelWithHint: true,
+                  border: OutlineInputBorder(),
                 ),
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 10),
+
+              // 附件ID（可选）
               TextField(
                 controller: _abFiles,
                 decoration: const InputDecoration(
                   labelText: '文件ID（逗号分隔，可选）',
+                  border: OutlineInputBorder(),
                 ),
               ),
               const SizedBox(height: 8),
@@ -649,13 +672,12 @@ class _SortingWorkPageState extends State<SortingWorkPage> {
                   .where((e) => e.isNotEmpty)
                   .toList();
 
-              // 显示忙态遮罩
+              // 忙态
               Get.dialog(const Center(child: CircularProgressIndicator()),
                   barrierDismissible: false);
 
               try {
-                final ok =
-                await c.submitAbnormal(remark: remark, files: files);
+                final ok = await c.submitAbnormal(remark: remark, files: files);
 
                 // 一次性关闭两个对话框（忙态 + 输入框）
                 if (Get.isDialogOpen == true) {
@@ -685,6 +707,105 @@ class _SortingWorkPageState extends State<SortingWorkPage> {
       ),
     );
   }
+  Future<void> _onFinishTap() async {
+    if (_containerCode.isEmpty) {
+      Get.snackbar('提示', '缺少柜号（containerCode），无法统计总结');
+    }
+    c.isPageBusy.value = true;
+    try {
+      final res = await c.finishAndSummarizeForDialog(containerCode: _containerCode);
+      _showFinishDialog(res);
+    } finally {
+      c.isPageBusy.value = false;
+    }
+  }
+
+  void _showFinishDialog(FinishDialogData d) {
+    final title = (d.step1Ok && d.step2Ok)
+        ? (d.abnormalCount > 0 && !d.step3Ok ? '已完成（异常待审核）' : '已完成')
+        : '未完成';
+
+    Get.dialog(
+      AlertDialog(
+        title: Text(title, style: const TextStyle(fontWeight: FontWeight.w800)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Text('无异常订单：', style: TextStyle(fontSize: 18)),
+                Text('${d.normalCount}',
+                    style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: Colors.green)),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                const Text('异常订单：', style: TextStyle(fontSize: 18)),
+                Text('${d.abnormalCount}',
+                    style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: Colors.red)),
+              ],
+            ),
+            const SizedBox(height: 12),
+            _stepLine('分拣完成', d.step1Ok, d.err1),
+            _stepLine('称重完成', d.step2Ok, d.err2),
+            _stepLine('管理员审核', d.step3Ok, d.err3,
+                hintWhenFail: (d.step1Ok && d.step2Ok && d.abnormalCount > 0)
+                    ? '存在异常订单，后台审核通过后自动完成'
+                    : null),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Get.back(),
+            child: const Text('返回'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              if (d.canLeaveToHome) {
+                // ✅ 前两步成功即可回扫码入口；第三步失败一般是异常待审核，不拦分拣员
+                Get.offAllNamed('/'); // 按你的首页路由调整
+              } else {
+                // ❌ 第 1/2 步失败：提供重试链路
+                Get.back();
+                _onFinishTap();
+              }
+            },
+            child: Text(d.canLeaveToHome ? '回到扫码入口' : '重试完成'),
+          ),
+        ],
+      ),
+      barrierDismissible: false,
+    );
+  }
+
+  Widget _stepLine(String name, bool ok, String? err, {String? hintWhenFail}) {
+    final color = ok ? Colors.green : Colors.red;
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(ok ? Icons.check_circle : Icons.error, color: color, size: 18),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('$name：${ok ? '成功' : '失败'}', style: TextStyle(fontSize: 16, color: color)),
+                if (!ok && (err?.isNotEmpty ?? false))
+                  Text(err!, style: const TextStyle(fontSize: 14, color: Colors.black54)),
+                if (!ok && hintWhenFail != null)
+                  Text(hintWhenFail, style: const TextStyle(fontSize: 13, color: Colors.orange)),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
 
   void _goNext() async {
     await c.saveProgress();
@@ -733,6 +854,7 @@ class InlineVideo extends StatefulWidget {
 class _InlineVideoState extends State<InlineVideo> {
   late final VideoPlayerController _controller;
   bool _initError = false;
+  double _speed = 1.0; //  倍速
 
   @override
   void initState() {
@@ -746,6 +868,7 @@ class _InlineVideoState extends State<InlineVideo> {
   Future<void> _initialize() async {
     try {
       await _controller.initialize();
+      await _controller.setPlaybackSpeed(_speed);
       setState(() {});
     } catch (e) {
       _initError = true;
@@ -761,10 +884,9 @@ class _InlineVideoState extends State<InlineVideo> {
 
   @override
   Widget build(BuildContext context) {
+    // 外层固定 16:9，高度一致
     return AspectRatio(
-      aspectRatio: _controller.value.isInitialized && _controller.value.aspectRatio != 0
-          ? _controller.value.aspectRatio
-          : 16 / 9,
+      aspectRatio: 16 / 9,
       child: Stack(
         alignment: Alignment.center,
         children: [
@@ -786,17 +908,71 @@ class _InlineVideoState extends State<InlineVideo> {
               child: Stack(
                 alignment: Alignment.center,
                 children: [
-                  VideoPlayer(_controller),
+                  // 播放画面（内部自适应）
+                  Positioned.fill(
+                    child: FittedBox(
+                      fit: BoxFit.contain,
+                      child: SizedBox(
+                        width: _controller.value.size.width,
+                        height: _controller.value.size.height,
+                        child: VideoPlayer(_controller),
+                      ),
+                    ),
+                  ),
+
                   if (!_controller.value.isPlaying)
                     const Icon(Icons.play_circle_outline, size: 88, color: Colors.white70),
+
+                  // 更大的可拖动区域（高度 40）
                   Positioned(
                     left: 16,
                     right: 16,
-                    bottom: 12,
-                    child: VideoProgressIndicator(
-                      _controller,
-                      allowScrubbing: true,
-                      padding: const EdgeInsets.symmetric(vertical: 6),
+                    bottom: 10,
+                    child: SizedBox(
+                      height: 40,
+                      child: Center(
+                        child: VideoProgressIndicator(
+                          _controller,
+                          allowScrubbing: true,
+                          padding: const EdgeInsets.symmetric(vertical: 8),
+                        ),
+                      ),
+                    ),
+                  ),
+
+                  // 倍速按钮（右上角）
+                  Positioned(
+                    top: 8,
+                    right: 8,
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: Colors.black54,
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: PopupMenuButton<double>(
+                        tooltip: '播放速度',
+                        initialValue: _speed,
+                        onSelected: (v) async {
+                          _speed = v;
+                          try {
+                            await _controller.setPlaybackSpeed(v);
+                          } catch (_) {}
+                          setState(() {});
+                        },
+                        itemBuilder: (_) => const [
+                          PopupMenuItem(value: 0.5, child: Text('0.5x')),
+                          PopupMenuItem(value: 1.0, child: Text('1.0x')),
+                          PopupMenuItem(value: 1.5, child: Text('1.5x')),
+                          PopupMenuItem(value: 2.0, child: Text('2.0x')),
+                        ],
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                          child: Text(
+                            '${_speed.toStringAsFixed(_speed == _speed.roundToDouble() ? 0 : 1)}x',
+                            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700),
+                          ),
+                        ),
+                      ),
                     ),
                   ),
                 ],

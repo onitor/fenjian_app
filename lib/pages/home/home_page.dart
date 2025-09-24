@@ -111,7 +111,8 @@ class _HomeScanEntryPageState extends State<HomeScanEntryPage> {
 
   Future<void> _goSorting() async {
     final input = _cabinetCtrl.text.trim();
-    final bound = Get.find<EquipmentController>().isBoundRx.value;
+    final ec = Get.find<EquipmentController>();
+    final bound = ec.isBoundRx.value;
 
     if (!bound) {
       Get.snackbar('请先绑定设备', '点击页面上的二维码进行绑定或联系管理员');
@@ -122,6 +123,7 @@ class _HomeScanEntryPageState extends State<HomeScanEntryPage> {
       return;
     }
 
+    // 解析运输单
     final resolved = await _locator.resolveShipmentByContainer(
       containerCode: input,
       limit: 1,
@@ -131,8 +133,30 @@ class _HomeScanEntryPageState extends State<HomeScanEntryPage> {
       return;
     }
 
-    Get.toNamed('/orders', arguments: {'shipment': resolved});
+    // 绑定分拣员（进入分拣前）
+    final pickUserId = (ec.userId ?? ec.runtimeUserId)?.toString() ?? '';
+    if (pickUserId.isEmpty) {
+      Get.snackbar('错误', '缺少分拣员ID，请重新绑定设备或联系管理员');
+      return;
+    }
+
+    // 忙态遮罩
+    Get.dialog(const Center(child: CircularProgressIndicator()), barrierDismissible: false);
+    try {
+      await _locator.bindPicker(
+        tmsOrderId: resolved.shipmentId,
+        tmsOrderCode: resolved.shipmentName,
+        pickUserId: pickUserId,
+      );
+      // 成功后进入订单列表
+      Get.back(); // 关忙态
+      Get.toNamed('/orders', arguments: {'shipment': resolved});
+    } catch (e) {
+      Get.back(); // 关忙态
+      Get.snackbar('绑定分拣员失败', e.toString().replaceFirst('Exception: ', ''));
+    }
   }
+
 
   // ✅ 解绑（退出登录）按钮
   Future<void> _onUnbind() async {

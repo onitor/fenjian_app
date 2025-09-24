@@ -124,6 +124,7 @@ class _OrdersListPageState extends State<OrdersListPage> {
                   'shipmentName': resolved.shipmentName,
                   'equipmentNumber': resolved.equipmentNumber,
                   'destination': resolved.destination,
+                  'containerCode': resolved.containerCode,
                   'poNumber': poList[i].number,
                   'orderId': poList[i].id,
                   'poIds': poIds,
